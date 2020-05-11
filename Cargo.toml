@@ -1,0 +1,12 @@
+[package]
+name = "io-uring-http-server"
+version = "0.1.0"
+publish = false
+authors = ["Yusuke Sasaki <yusuke.sasaki.nuem@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+anyhow = "1"
+iou = "0.2"
+libc = "0.2"
+uring-sys = "1.0.0-beta"
