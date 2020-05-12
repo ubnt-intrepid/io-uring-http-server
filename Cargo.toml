@@ -7,6 +7,7 @@ edition = "2018"
 
 [dependencies]
 anyhow = "1"
+httparse = "1"
 iou = "0.2"
 libc = "0.2"
 uring-sys = "1.0.0-beta"
