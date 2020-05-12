@@ -13,11 +13,12 @@ const READ_SIZE: usize = 8096;
 enum UserData {
     Accept,
     Read(Box<ReadData>),
+    Write(Box<WriteData>),
 }
 
 struct ReadData {
     #[allow(dead_code)]
-    client_socket: TcpStream,
+    client_socket: Option<TcpStream>,
     iovecs: Vec<libc::iovec>,
 }
 
@@ -29,6 +30,12 @@ impl Drop for ReadData {
             }
         }
     }
+}
+
+struct WriteData {
+    #[allow(dead_code)]
+    client_socket: TcpStream,
+    iovecs: Vec<libc::iovec>,
 }
 
 pub struct Server {
@@ -75,7 +82,7 @@ impl Server {
                 UserData::Read(..) if res == 0 => {
                     eprintln!("warning: empty request");
                 }
-                UserData::Read(user_data) => {
+                UserData::Read(mut user_data) => {
                     println!("read {} bytes", res);
                     let buf = &user_data.iovecs[0];
                     let buf = unsafe {
@@ -112,11 +119,17 @@ impl Server {
                         );
                     }
 
-                    // TODO: write response
+                    // TODO: handle HTTP methods
                     // match req.method {
                     //     Some("GET") => todo!("get_request"),
                     //     _ => todo!("unimplemented_method"),
                     // }
+
+                    self.add_write_request(user_data.client_socket.take().unwrap())?;
+                }
+
+                UserData::Write(..) => {
+                    // do nothing.
                 }
             }
         }
@@ -153,7 +166,7 @@ impl Server {
 
         let client_socket_fd = client_socket.as_raw_fd();
         let mut user_data = Box::new(ReadData {
-            client_socket,
+            client_socket: Some(client_socket),
             iovecs: vec![libc::iovec {
                 iov_base: unsafe { libc::calloc(READ_SIZE, 1) },
                 iov_len: READ_SIZE,
@@ -164,6 +177,40 @@ impl Server {
         }
 
         let user_data = Box::new(UserData::Read(user_data));
+        sqe.set_user_data(Box::into_raw(user_data) as _);
+
+        self.io_uring.submit_sqes()?;
+
+        Ok(())
+    }
+
+    fn add_write_request(&mut self, client_socket: TcpStream) -> anyhow::Result<()> {
+        static RESPONSE: &[u8] = b"\
+            HTTP/1.1 404 Not Found\r\n\
+            Server: io-uring-http-server\r\n\
+            Content-Length: 0\r\n\
+            Date: Tue, 12 May 2020 09:44:32 GMT\r\n\
+            \r\n\
+        ";
+
+        let mut sqe = self
+            .io_uring
+            .next_sqe()
+            .context("submission queue is full")?;
+
+        let client_socket_fd = client_socket.as_raw_fd();
+        let user_data = Box::new(WriteData {
+            client_socket,
+            iovecs: vec![libc::iovec {
+                iov_base: RESPONSE.as_ptr() as *mut _,
+                iov_len: RESPONSE.len(),
+            }],
+        });
+        unsafe {
+            sqe.prep_writev(client_socket_fd, &user_data.iovecs[..], 0);
+        }
+
+        let user_data = Box::new(UserData::Write(user_data));
         sqe.set_user_data(Box::into_raw(user_data) as _);
 
         self.io_uring.submit_sqes()?;

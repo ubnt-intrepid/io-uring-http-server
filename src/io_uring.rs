@@ -10,8 +10,8 @@ pub trait SubmissionQueueEventExt {
         addrlen: *mut socklen_t,
         flags: i32,
     );
-
     unsafe fn prep_readv(&mut self, fd: RawFd, bufs: &mut [libc::iovec], flags: libc::off_t);
+    unsafe fn prep_writev(&mut self, fd: RawFd, bufs: &[libc::iovec], flags: libc::off_t);
 }
 
 impl SubmissionQueueEventExt for SubmissionQueueEvent<'_> {
@@ -36,6 +36,16 @@ impl SubmissionQueueEventExt for SubmissionQueueEvent<'_> {
             self.raw_mut(),
             fd,
             iovecs.as_mut_ptr(),
+            iovecs.len() as libc::c_uint,
+            offset,
+        )
+    }
+
+    unsafe fn prep_writev(&mut self, fd: RawFd, iovecs: &[libc::iovec], offset: libc::off_t) {
+        uring_sys::io_uring_prep_writev(
+            self.raw_mut(),
+            fd,
+            iovecs.as_ptr(),
             iovecs.len() as libc::c_uint,
             offset,
         )
