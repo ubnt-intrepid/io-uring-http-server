@@ -11,6 +11,34 @@ use std::{
 const QUEUE_DEPTH: u32 = 256;
 const READ_SIZE: usize = 8096;
 
+const NOT_FOUND: &str = "\
+    HTTP/1.0 404 Not Found\r\n\
+    Content-type: text/html\r\n\
+    \r\n\
+    <html>\
+    <head>\
+    <title>404 Not Found</title>\
+    </head>\
+    <body>\
+    <h1>404 Not Found</h1>\
+    </body>\
+    </html>\
+";
+
+const BAD_REQUEST: &str = "\
+    HTTP/1.0 400 Bad Request\r\n\
+    Content-type: text/html\r\n\
+    \r\n\
+    <html>\
+    <head>\
+    <title>400 Bad Request</title>\
+    </head>\
+    <body>\
+    <h1>400 Bad Request</h1>\
+    </body>\
+    </html>\
+";
+
 fn main() -> anyhow::Result<()> {
     pretty_env_logger::try_init()?;
 
@@ -50,19 +78,19 @@ fn main() -> anyhow::Result<()> {
                     .ok_or_else(|| anyhow::anyhow!("unimplemented: continue read request"))?;
                 log::info!("{} {}", request.method, request.path);
 
-                // TODO: handle HTTP methods
-
-                uring.next_sqe()?.write(
-                    user_data.client_socket.unwrap(),
-                    "\
-                        HTTP/1.1 404 Not Found\r\n\
-                        Server: io-uring-http-server\r\n\
-                        Content-Length: 0\r\n\
-                        Date: Tue, 12 May 2020 09:44:32 GMT\r\n\
-                        \r\n\
-                    "
-                    .into(),
-                )?;
+                match request.method {
+                    "GET" => {
+                        // TODO: handle HTTP methods
+                        uring
+                            .next_sqe()?
+                            .write(user_data.client_socket.unwrap(), NOT_FOUND.into())?;
+                    }
+                    _ => {
+                        uring
+                            .next_sqe()?
+                            .write(user_data.client_socket.unwrap(), BAD_REQUEST.into())?;
+                    }
+                }
             }
 
             EventType::Write => {
