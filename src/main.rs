@@ -11,11 +11,13 @@ const QUEUE_DEPTH: u32 = 256;
 const READ_SIZE: usize = 8096;
 
 fn main() -> anyhow::Result<()> {
+    pretty_env_logger::try_init()?;
+
     let listener = TcpListener::bind("127.0.0.1:8000") //
         .context("failed to open listener socket")?;
 
     if let Ok(local_addr) = listener.local_addr() {
-        println!("Listening on {}", local_addr);
+        log::info!("Listening on {}", local_addr);
     }
 
     let mut uring = Uring::new(QUEUE_DEPTH) //
@@ -27,8 +29,10 @@ fn main() -> anyhow::Result<()> {
         let (user_data, res) = uring.wait_cqe()?;
         let n = res.context("async request failed")?;
 
+        log::trace!("receive a completion event");
         match user_data.event_type {
             EventType::Accept => {
+                log::trace!("--> accept");
                 uring.next_sqe()?.accept(&listener)?;
 
                 let client_socket = unsafe { TcpStream::from_raw_fd(n as _) };
@@ -38,6 +42,7 @@ fn main() -> anyhow::Result<()> {
 
             EventType::Read if n == 0 => eprintln!("warning: empty request"),
             EventType::Read => {
+                log::trace!("--> read {} bytes", n);
                 let buf = &user_data.buf[..n];
 
                 let mut headers = [httparse::EMPTY_HEADER; 16];
@@ -53,6 +58,10 @@ fn main() -> anyhow::Result<()> {
                     }
                 };
 
+                let method = req.method.expect("missing HTTP method");
+                let path = req.path.expect("missing HTTP path");
+                log::info!("{} {}", method, path);
+
                 // TODO: handle HTTP methods
                 uring.next_sqe()?.write(
                     user_data.client_socket.unwrap(),
@@ -67,7 +76,10 @@ fn main() -> anyhow::Result<()> {
                 )?;
             }
 
-            EventType::Write => { /* do nothing. */ }
+            EventType::Write => {
+                log::trace!("--> write {} bytes", n);
+                /* do nothing. */
+            }
         }
 
         uring.submit_sqes()?;
