@@ -1,4 +1,5 @@
 mod io_uring;
+mod request;
 
 use crate::io_uring::{EventType, Uring};
 use anyhow::Context as _;
@@ -45,33 +46,21 @@ fn main() -> anyhow::Result<()> {
                 log::trace!("--> read {} bytes", n);
                 let buf = &user_data.buf[..n];
 
-                let mut headers = [httparse::EMPTY_HEADER; 16];
-                let mut req = httparse::Request::new(&mut headers);
-                let status = req
-                    .parse(buf) //
-                    .context("failed to parse http request")?;
-
-                let _amt = match status {
-                    httparse::Status::Complete(amt) => amt,
-                    httparse::Status::Partial => {
-                        anyhow::bail!("unimplemented: continue read request")
-                    }
-                };
-
-                let method = req.method.expect("missing HTTP method");
-                let path = req.path.expect("missing HTTP path");
-                log::info!("{} {}", method, path);
+                let request = crate::request::parse(buf)?
+                    .ok_or_else(|| anyhow::anyhow!("unimplemented: continue read request"))?;
+                log::info!("{} {}", request.method, request.path);
 
                 // TODO: handle HTTP methods
+
                 uring.next_sqe()?.write(
                     user_data.client_socket.unwrap(),
                     "\
-                            HTTP/1.1 404 Not Found\r\n\
-                            Server: io-uring-http-server\r\n\
-                            Content-Length: 0\r\n\
-                            Date: Tue, 12 May 2020 09:44:32 GMT\r\n\
-                            \r\n\
-                        "
+                        HTTP/1.1 404 Not Found\r\n\
+                        Server: io-uring-http-server\r\n\
+                        Content-Length: 0\r\n\
+                        Date: Tue, 12 May 2020 09:44:32 GMT\r\n\
+                        \r\n\
+                    "
                     .into(),
                 )?;
             }
