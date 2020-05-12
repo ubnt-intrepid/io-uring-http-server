@@ -4,7 +4,7 @@ use iou::IoUring;
 use std::{
     net::{TcpListener, TcpStream, ToSocketAddrs},
     os::unix::prelude::*,
-    ptr,
+    ptr, slice,
 };
 
 const QUEUE_DEPTH: u32 = 256;
@@ -58,18 +58,20 @@ impl Server {
         self.add_accept_request()?;
 
         loop {
-            let cqe = self
-                .io_uring
-                .wait_for_cqe()
-                .context("IoUring::wait_for_cqe")?;
+            let (user_data, res);
+            {
+                let cqe = self
+                    .io_uring
+                    .wait_for_cqe()
+                    .context("IoUring::wait_for_cqe")?;
 
-            let user_data = unsafe {
-                let ptr = cqe.user_data() as *mut UserData;
-                Box::from_raw(ptr)
-            };
-            let res = cqe.result().context("async request failed")?;
+                user_data = unsafe {
+                    let ptr = cqe.user_data() as *mut UserData;
+                    Box::from_raw(ptr)
+                };
 
-            drop(cqe);
+                res = cqe.result().context("async request failed")?;
+            }
 
             match *user_data {
                 UserData::Accept => {
@@ -84,21 +86,20 @@ impl Server {
                 }
                 UserData::Read(mut user_data) => {
                     println!("read {} bytes", res);
+
+                    // parse HTTP request.
                     let buf = &user_data.iovecs[0];
                     let buf = unsafe {
-                        std::slice::from_raw_parts(
+                        slice::from_raw_parts(
                             buf.iov_base as *const u8, //
                             buf.iov_len,
                         )
                     };
-
                     let mut headers = [httparse::EMPTY_HEADER; 16];
-
                     let mut req = httparse::Request::new(&mut headers);
                     let status = req
                         .parse(buf) //
                         .context("failed to parse http request")?;
-
                     let _amt = match status {
                         httparse::Status::Complete(amt) => amt,
                         httparse::Status::Partial => {
@@ -106,26 +107,17 @@ impl Server {
                         }
                     };
 
-                    println!("Got an HTTP request:");
-                    println!("  method: {:?}", req.method);
-                    println!("  path: {:?}", req.path);
-                    println!("  version: {:?}", req.version);
-                    println!("  headers:");
-                    for header in req.headers {
-                        println!(
-                            "    {}: {}",
-                            header.name,
-                            String::from_utf8_lossy(header.value)
-                        );
-                    }
-
                     // TODO: handle HTTP methods
-                    // match req.method {
-                    //     Some("GET") => todo!("get_request"),
-                    //     _ => todo!("unimplemented_method"),
-                    // }
-
-                    self.add_write_request(user_data.client_socket.take().unwrap())?;
+                    self.add_write_request(
+                        user_data.client_socket.take().unwrap(),
+                        b"\
+                            HTTP/1.1 404 Not Found\r\n\
+                            Server: io-uring-http-server\r\n\
+                            Content-Length: 0\r\n\
+                            Date: Tue, 12 May 2020 09:44:32 GMT\r\n\
+                            \r\n\
+                        ",
+                    )?;
                 }
 
                 UserData::Write(..) => {
@@ -184,15 +176,11 @@ impl Server {
         Ok(())
     }
 
-    fn add_write_request(&mut self, client_socket: TcpStream) -> anyhow::Result<()> {
-        static RESPONSE: &[u8] = b"\
-            HTTP/1.1 404 Not Found\r\n\
-            Server: io-uring-http-server\r\n\
-            Content-Length: 0\r\n\
-            Date: Tue, 12 May 2020 09:44:32 GMT\r\n\
-            \r\n\
-        ";
-
+    fn add_write_request(
+        &mut self,
+        client_socket: TcpStream,
+        buf: &'static [u8],
+    ) -> anyhow::Result<()> {
         let mut sqe = self
             .io_uring
             .next_sqe()
@@ -202,8 +190,8 @@ impl Server {
         let user_data = Box::new(WriteData {
             client_socket,
             iovecs: vec![libc::iovec {
-                iov_base: RESPONSE.as_ptr() as *mut _,
-                iov_len: RESPONSE.len(),
+                iov_base: buf.as_ptr() as *mut _,
+                iov_len: buf.len(),
             }],
         });
         unsafe {
