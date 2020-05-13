@@ -8,8 +8,7 @@ edition = "2018"
 [dependencies]
 anyhow = "1"
 httparse = "1"
-iou = "0.2"
+iou = { git = "https://github.com/withoutboats/iou", rev = "12484ce" }
 libc = "0.2"
 log = "0.4"
 pretty_env_logger = "0.3"
-uring-sys = "1.0.0-beta"

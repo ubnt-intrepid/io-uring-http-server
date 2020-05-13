@@ -108,16 +108,15 @@ dependencies = [
  "libc",
  "log",
  "pretty_env_logger",
- "uring-sys",
 ]
 
 [[package]]
 name = "iou"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "debb2518013d839b0555490f982402003359ce08575914533b9dba484796d868"
+source = "git+https://github.com/withoutboats/iou?rev=12484ce#12484ceb3f435db47a1d5322ee01ef229423abcb"
 dependencies = [
  "bitflags",
+ "nix",
  "uring-sys",
 ]
 
@@ -129,9 +128,9 @@ checksum = "e2abad23fbc42b3700f2f279844dc832adb2b2eb069b2df918f455c4e18cc646"
 
 [[package]]
 name = "libc"
-version = "0.2.69"
+version = "0.2.70"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "99e85c08494b21a9054e7fe1374a732aeadaff3980b6990b94bfd3a70f690005"
+checksum = "3baa92041a6fec78c687fa0cc2b3fae8884f743d672cf551bed1d6dac6988d0f"
 
 [[package]]
 name = "log"
@@ -147,6 +146,19 @@ name = "memchr"
 version = "2.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3728d817d99e5ac407411fa471ff9800a778d88a24685968b36824eaf4bee400"
+
+[[package]]
+name = "nix"
+version = "0.16.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dd0eaf8df8bab402257e0a5c17a254e4cc1f72a93588a1ddfb5d356c801aa7cb"
+dependencies = [
+ "bitflags",
+ "cc",
+ "cfg-if",
+ "libc",
+ "void",
+]
 
 [[package]]
 name = "num-integer"
@@ -232,13 +244,18 @@ dependencies = [
 
 [[package]]
 name = "uring-sys"
-version = "1.0.0-beta"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "581128ecd1639010fbca826ecce27923af1097e9dd27fa2bf22b26a4d6daf856"
+version = "1.0.3"
+source = "git+https://github.com/withoutboats/uring-sys#056707f2c458d03b4eabef140e4add55a1f5d39a"
 dependencies = [
  "cc",
  "libc",
 ]
+
+[[package]]
+name = "void"
+version = "1.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a02e4885ed3bc0f2de90ea6dd45ebcbb66dacffe03547fadbb0eeae2770887d"
 
 [[package]]
 name = "winapi"
