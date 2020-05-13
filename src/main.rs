@@ -16,7 +16,20 @@ use std::{
 const QUEUE_DEPTH: u32 = 256;
 const READ_SIZE: usize = 8096;
 
+const MIN_KERNEL_MAJOR_VERSION: u16 = 5;
+const MIN_KERNEL_MINOR_VERSION: u16 = 5;
+
 fn main() -> anyhow::Result<()> {
+    let (major, minor) = get_kernel_version().context("failed to check the kernel version")?;
+    anyhow::ensure!(
+        major >= MIN_KERNEL_MAJOR_VERSION && minor >= MIN_KERNEL_MINOR_VERSION,
+        "The kernel version must be at least {}.{} (your version is {}.{})",
+        MIN_KERNEL_MAJOR_VERSION,
+        MIN_KERNEL_MINOR_VERSION,
+        major,
+        minor,
+    );
+
     pretty_env_logger::try_init()?;
 
     let listener = TcpListener::bind("127.0.0.1:8000") //
@@ -148,4 +161,28 @@ fn make_error_response_msg(status: &str) -> Vec<u8> {
         status = status
     )
     .into()
+}
+
+fn get_kernel_version() -> anyhow::Result<(u16, u16)> {
+    use std::ffi::CStr;
+
+    let uname = unsafe {
+        let mut buf = std::mem::MaybeUninit::<libc::utsname>::uninit();
+
+        let rc = libc::uname(buf.as_mut_ptr());
+        if rc < 0 {
+            return Err(io::Error::last_os_error()).context("uname");
+        }
+
+        buf.assume_init()
+    };
+
+    let release: &CStr = unsafe { CStr::from_ptr(uname.release.as_ptr()) };
+    let release = release.to_str()?;
+
+    let mut iter = release.split('.');
+    let major = iter.next().context("missing major")?.parse()?;
+    let minor = iter.next().context("missing minor")?.parse()?;
+
+    Ok((major, minor))
 }
