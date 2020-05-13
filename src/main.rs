@@ -2,7 +2,7 @@ mod http;
 mod io_uring;
 
 use crate::{
-    http::Request,
+    http::{Request, Response},
     io_uring::{Event, Uring},
 };
 use anyhow::Context as _;
@@ -68,12 +68,16 @@ fn main() -> anyhow::Result<()> {
                     .ok_or_else(|| anyhow::anyhow!("unimplemented: continue read request"))?;
                 log::info!("{} {}", request.method, request.path);
 
-                let response_msg = handle_request(request)
-                    .unwrap_or_else(|_err| make_error_response_msg("500 Internal Server Error"));
+                let (response, body) = handle_request(request).unwrap_or_else(|err| {
+                    make_error_response(
+                        "500 Internal Server Error",
+                        &format!("internal server error: {}", err),
+                    )
+                });
 
                 uring
                     .next_sqe()?
-                    .write_response(client_socket, response_msg)?;
+                    .write_response(client_socket, response, body)?;
             }
 
             Event::WriteResponse { .. } => {
@@ -86,7 +90,7 @@ fn main() -> anyhow::Result<()> {
     }
 }
 
-fn handle_request(request: Request<'_>) -> anyhow::Result<Vec<u8>> {
+fn handle_request(request: Request<'_>) -> anyhow::Result<(Response, Vec<u8>)> {
     match request.method {
         "GET" => {
             // FIXME: asyncify
@@ -100,14 +104,15 @@ fn handle_request(request: Request<'_>) -> anyhow::Result<Vec<u8>> {
             let file = match fs::OpenOptions::new().read(true).open(&path) {
                 Ok(f) => f,
                 Err(err) if err.kind() == io::ErrorKind::NotFound => {
-                    return Ok(make_error_response_msg("404 Not Found"));
+                    return Ok(make_error_response(
+                        "404 Not Found",
+                        &format!("Not Found: {}", request.path),
+                    ));
                 }
                 Err(err) => anyhow::bail!(err),
             };
 
             let metadata = file.metadata()?;
-            let mut content = io::BufReader::new(file);
-
             let content_type = match path.extension().and_then(|ext| ext.to_str()) {
                 Some("jpg") | Some("jpeg") => "image/jpg",
                 Some("png") => "image/png",
@@ -119,48 +124,55 @@ fn handle_request(request: Request<'_>) -> anyhow::Result<Vec<u8>> {
                 Some("json") => "application/json",
                 _ => "text/plain",
             };
-            let content_length = metadata.len();
 
-            let mut response_msg = vec![0u8; 0];
-            use std::io::Write as _;
-            write!(
-                &mut response_msg,
-                "\
-                    HTTP/1.1 200 OK\r\n\
-                    Content-Type: {content_type}\r\n\
-                    Content-Length: {content_length}\r\n\
-                    \r\n\
-                ",
-                content_type = content_type,
-                content_length = content_length,
-            )?;
+            let response = Response {
+                status: "200 OK",
+                headers: vec![
+                    ("content-type".into(), content_type.into()),
+                    ("content-length".into(), metadata.len().to_string().into()),
+                ],
+            };
 
-            io::copy(&mut content, &mut response_msg)?;
+            let mut content = Vec::with_capacity(metadata.len() as usize);
+            use std::io::Read as _;
+            io::BufReader::new(file).read_to_end(&mut content)?;
 
-            Ok(response_msg)
+            Ok((response, content))
         }
-        _ => Ok(make_error_response_msg("400 Bad Request")),
+        _ => Ok(make_error_response(
+            "400 Bad Request",
+            "unimplemented HTTP method",
+        )),
     }
 }
 
-fn make_error_response_msg(status: &str) -> Vec<u8> {
-    format!(
+fn make_error_response(status: &'static str, msg: &str) -> (Response, Vec<u8>) {
+    let body = format!(
         "\
-            HTTP/1.1 {status}\r\n\
-            Content-type: text/html\r\n\
-            \r\n\
             <html>\
             <head>\
             <title>{status}</title>\
             </head>\
             <body>\
             <h1>{status}</h1>\
+            <p>{msg}</p>
             </body>\
             </html>\
         ",
-        status = status
+        status = status,
+        msg = msg,
+    );
+    let body_len = body.len().to_string();
+    (
+        Response {
+            status,
+            headers: vec![
+                ("content-type".into(), "text/html".into()),
+                ("content-length".into(), body_len.into()),
+            ],
+        },
+        body.into(),
     )
-    .into()
 }
 
 fn get_kernel_version() -> anyhow::Result<(u16, u16)> {

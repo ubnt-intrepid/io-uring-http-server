@@ -1,5 +1,6 @@
+use crate::http::Response;
 use std::{
-    io,
+    io::{self, Write as _},
     net::{TcpListener, TcpStream},
     os::unix::prelude::*,
 };
@@ -82,8 +83,22 @@ impl SubmissionEvent<'_> {
         Ok(())
     }
 
-    pub fn write_response(mut self, client_socket: TcpStream, buf: Vec<u8>) -> io::Result<()> {
+    pub fn write_response(
+        mut self,
+        client_socket: TcpStream,
+        response: Response,
+        body: Vec<u8>,
+    ) -> io::Result<()> {
         let sqe = &mut self.0;
+
+        let mut buf = Vec::new();
+        write!(&mut buf, "HTTP/1.1 {}\r\n", response.status)?;
+        for (name, value) in response.headers {
+            write!(&mut buf, "{}: {}\r\n", name, value)?;
+        }
+        write!(&mut buf, "\r\n")?;
+
+        buf.extend_from_slice(&body[..]);
 
         unsafe {
             sqe.prep_write(client_socket.as_raw_fd(), &buf[..], 0);

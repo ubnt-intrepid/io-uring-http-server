@@ -1,4 +1,5 @@
 use anyhow::Context as _;
+use std::borrow::Cow;
 
 pub struct Request<'a> {
     pub method: &'a str,
@@ -28,4 +29,9 @@ pub fn parse_request(buf: &[u8]) -> anyhow::Result<Option<Request<'_>>> {
         version,
         headers,
     }))
+}
+
+pub struct Response {
+    pub status: &'static str,
+    pub headers: Vec<(Cow<'static, str>, Cow<'static, str>)>,
 }
