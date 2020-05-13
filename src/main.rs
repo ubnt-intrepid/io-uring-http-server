@@ -1,11 +1,8 @@
 mod http;
-mod io_uring;
 
-use crate::{
-    http::{Request, Response},
-    io_uring::{Event, Uring},
-};
+use crate::http::{Request, Response};
 use anyhow::Context as _;
+use iou::IoUring;
 use std::{
     fs, io,
     net::{TcpListener, TcpStream},
@@ -39,28 +36,29 @@ fn main() -> anyhow::Result<()> {
         log::info!("Listening on {}", local_addr);
     }
 
-    let mut uring = Uring::new(QUEUE_DEPTH) //
+    let mut ring = IoUring::new(QUEUE_DEPTH) //
         .context("failed to init io_uring")?;
-    uring.next_sqe()?.accept(&listener)?;
-    uring.submit_sqes()?;
+
+    add_accept_request(&mut ring, &listener)?;
+    ring.submit_sqes()?;
 
     loop {
-        let (user_data, res) = uring.wait_cqe()?;
+        let (user_data, res) = wait_next_event(&mut ring)?;
         let n = res.context("async request failed")?;
 
         log::trace!("receive a completion event");
         match *user_data {
             Event::Accept => {
                 log::trace!("--> accept");
-                uring.next_sqe()?.accept(&listener)?;
+                add_accept_request(&mut ring, &listener)?;
 
                 let client_socket = unsafe { TcpStream::from_raw_fd(n as _) };
                 let buf = vec![0u8; READ_SIZE];
-                uring.next_sqe()?.read_request(client_socket, buf)?;
+                add_read_request(&mut ring, client_socket, buf)?;
             }
 
-            Event::ReadRequest { .. } if n == 0 => eprintln!("warning: empty request"),
-            Event::ReadRequest { buf, client_socket } => {
+            Event::Read { .. } if n == 0 => eprintln!("warning: empty request"),
+            Event::Read { buf, client_socket } => {
                 log::trace!("--> read {} bytes", n);
                 let buf = &buf[..n];
 
@@ -75,19 +73,105 @@ fn main() -> anyhow::Result<()> {
                     )
                 });
 
-                uring
-                    .next_sqe()?
-                    .write_response(client_socket, response, body)?;
+                add_write_request(&mut ring, client_socket, response, body)?;
             }
 
-            Event::WriteResponse { .. } => {
+            Event::Write { .. } => {
                 log::trace!("--> write {} bytes", n);
                 /* do nothing. */
             }
         }
 
-        uring.submit_sqes()?;
+        ring.submit_sqes()?;
     }
+}
+
+#[allow(dead_code)]
+enum Event {
+    Accept,
+    Read {
+        client_socket: TcpStream,
+        buf: Vec<u8>,
+    },
+    Write {
+        client_socket: TcpStream,
+        buf: Vec<u8>,
+    },
+}
+
+fn wait_next_event(ring: &mut IoUring) -> io::Result<(Box<Event>, io::Result<usize>)> {
+    let cqe = ring.wait_for_cqe()?;
+
+    let user_data = unsafe {
+        let ptr = cqe.user_data() as *mut Event;
+        Box::from_raw(ptr)
+    };
+
+    let res = cqe.result();
+
+    Ok((user_data, res))
+}
+
+fn next_sqe(ring: &mut IoUring) -> anyhow::Result<iou::SubmissionQueueEvent<'_>> {
+    ring.next_sqe().context("submission queue is empty")
+}
+
+fn add_accept_request(ring: &mut IoUring, listener: &TcpListener) -> anyhow::Result<()> {
+    let mut sqe = next_sqe(ring)?;
+
+    unsafe {
+        sqe.prep_accept(listener.as_raw_fd(), None, iou::SockFlag::empty());
+    }
+
+    let user_data = Box::new(Event::Accept);
+    sqe.set_user_data(Box::into_raw(user_data) as _);
+
+    Ok(())
+}
+
+fn add_read_request(
+    ring: &mut IoUring,
+    client_socket: TcpStream,
+    mut buf: Vec<u8>,
+) -> anyhow::Result<()> {
+    let mut sqe = next_sqe(ring)?;
+
+    unsafe {
+        sqe.prep_read(client_socket.as_raw_fd(), &mut buf[..], 0);
+    }
+
+    let user_data = Box::new(Event::Read { client_socket, buf });
+    sqe.set_user_data(Box::into_raw(user_data) as _);
+
+    Ok(())
+}
+
+fn add_write_request(
+    ring: &mut IoUring,
+    client_socket: TcpStream,
+    response: Response,
+    body: Vec<u8>,
+) -> anyhow::Result<()> {
+    let mut sqe = next_sqe(ring)?;
+
+    use std::io::Write as _;
+    let mut buf = Vec::new();
+    write!(&mut buf, "HTTP/1.1 {}\r\n", response.status)?;
+    for (name, value) in response.headers {
+        write!(&mut buf, "{}: {}\r\n", name, value)?;
+    }
+    write!(&mut buf, "\r\n")?;
+
+    buf.extend_from_slice(&body[..]);
+
+    unsafe {
+        sqe.prep_write(client_socket.as_raw_fd(), &buf[..], 0);
+    }
+
+    let user_data = Box::new(Event::Write { client_socket, buf });
+    sqe.set_user_data(Box::into_raw(user_data) as _);
+
+    Ok(())
 }
 
 fn handle_request(request: Request<'_>) -> anyhow::Result<(Response, Vec<u8>)> {
