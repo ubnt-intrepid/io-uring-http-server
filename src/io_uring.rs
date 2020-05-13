@@ -4,17 +4,17 @@ use std::{
     os::unix::prelude::*,
 };
 
-pub enum EventType {
-    Accept,
-    Read,
-    Write,
-}
-
 #[allow(dead_code)]
-pub struct Event {
-    pub event_type: EventType,
-    pub client_socket: Option<TcpStream>,
-    pub buf: Vec<u8>,
+pub enum Event {
+    Accept,
+    ReadRequest {
+        client_socket: TcpStream,
+        buf: Vec<u8>,
+    },
+    WriteResponse {
+        client_socket: TcpStream,
+        buf: Vec<u8>,
+    },
 }
 
 pub struct Uring(iou::IoUring);
@@ -59,45 +59,37 @@ impl SubmissionEvent<'_> {
             sqe.prep_accept(listener.as_raw_fd(), None, iou::SockFlag::empty());
         }
 
-        let user_data = Box::new(Event {
-            event_type: EventType::Accept,
-            client_socket: None,
-            buf: Vec::new(),
-        });
+        let user_data = Box::new(Event::Accept);
         sqe.set_user_data(Box::into_raw(user_data) as _);
 
         Ok(())
     }
 
-    pub fn read(mut self, client_socket: TcpStream, mut buf: Vec<u8>) -> anyhow::Result<()> {
+    pub fn read_request(
+        mut self,
+        client_socket: TcpStream,
+        mut buf: Vec<u8>,
+    ) -> anyhow::Result<()> {
         let sqe = &mut self.0;
 
         unsafe {
             sqe.prep_read(client_socket.as_raw_fd(), &mut buf[..], 0);
         }
 
-        let user_data = Box::new(Event {
-            event_type: EventType::Read,
-            client_socket: Some(client_socket),
-            buf,
-        });
+        let user_data = Box::new(Event::ReadRequest { client_socket, buf });
         sqe.set_user_data(Box::into_raw(user_data) as _);
 
         Ok(())
     }
 
-    pub fn write(mut self, client_socket: TcpStream, buf: Vec<u8>) -> io::Result<()> {
+    pub fn write_response(mut self, client_socket: TcpStream, buf: Vec<u8>) -> io::Result<()> {
         let sqe = &mut self.0;
 
         unsafe {
             sqe.prep_write(client_socket.as_raw_fd(), &buf[..], 0);
         }
 
-        let user_data = Box::new(Event {
-            event_type: EventType::Write,
-            client_socket: Some(client_socket),
-            buf,
-        });
+        let user_data = Box::new(Event::WriteResponse { client_socket, buf });
         sqe.set_user_data(Box::into_raw(user_data) as _);
 
         Ok(())

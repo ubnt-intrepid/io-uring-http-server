@@ -1,9 +1,9 @@
+mod http;
 mod io_uring;
-mod request;
 
 use crate::{
-    io_uring::{EventType, Uring},
-    request::Request,
+    http::Request,
+    io_uring::{Event, Uring},
 };
 use anyhow::Context as _;
 use std::{
@@ -49,22 +49,22 @@ fn main() -> anyhow::Result<()> {
         let n = res.context("async request failed")?;
 
         log::trace!("receive a completion event");
-        match user_data.event_type {
-            EventType::Accept => {
+        match *user_data {
+            Event::Accept => {
                 log::trace!("--> accept");
                 uring.next_sqe()?.accept(&listener)?;
 
                 let client_socket = unsafe { TcpStream::from_raw_fd(n as _) };
                 let buf = vec![0u8; READ_SIZE];
-                uring.next_sqe()?.read(client_socket, buf)?;
+                uring.next_sqe()?.read_request(client_socket, buf)?;
             }
 
-            EventType::Read if n == 0 => eprintln!("warning: empty request"),
-            EventType::Read => {
+            Event::ReadRequest { .. } if n == 0 => eprintln!("warning: empty request"),
+            Event::ReadRequest { buf, client_socket } => {
                 log::trace!("--> read {} bytes", n);
-                let buf = &user_data.buf[..n];
+                let buf = &buf[..n];
 
-                let request = crate::request::parse(buf)?
+                let request = crate::http::parse_request(buf)?
                     .ok_or_else(|| anyhow::anyhow!("unimplemented: continue read request"))?;
                 log::info!("{} {}", request.method, request.path);
 
@@ -73,10 +73,10 @@ fn main() -> anyhow::Result<()> {
 
                 uring
                     .next_sqe()?
-                    .write(user_data.client_socket.unwrap(), response_msg)?;
+                    .write_response(client_socket, response_msg)?;
             }
 
-            EventType::Write => {
+            Event::WriteResponse { .. } => {
                 log::trace!("--> write {} bytes", n);
                 /* do nothing. */
             }

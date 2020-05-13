@@ -7,7 +7,7 @@ pub struct Request<'a> {
     pub headers: Vec<(&'a str, &'a [u8])>,
 }
 
-pub fn parse(buf: &[u8]) -> anyhow::Result<Option<Request<'_>>> {
+pub fn parse_request(buf: &[u8]) -> anyhow::Result<Option<Request<'_>>> {
     let mut headers = [httparse::EMPTY_HEADER; 16];
 
     let mut req = httparse::Request::new(&mut headers);
