@@ -11,4 +11,6 @@ httparse = "1"
 iou = { git = "https://github.com/withoutboats/iou", rev = "12484ce" }
 libc = "0.2"
 log = "0.4"
+mio = "0.6"
 pretty_env_logger = "0.3"
+tokio = { version = "0.2", features = [ "rt-core", "io-driver", "io-util", "macros" ] }

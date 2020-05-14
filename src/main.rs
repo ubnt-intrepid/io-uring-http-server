@@ -1,6 +1,10 @@
+mod eventfd;
 mod http;
 
-use crate::http::{Request, Response};
+use crate::{
+    eventfd::EventFd,
+    http::{Request, Response},
+};
 use anyhow::Context as _;
 use iou::IoUring;
 use std::{
@@ -9,6 +13,7 @@ use std::{
     os::unix::prelude::*,
     path::Path,
 };
+use tokio::io::{AsyncReadExt as _, PollEvented};
 
 const QUEUE_DEPTH: u32 = 256;
 const READ_SIZE: usize = 8096;
@@ -16,7 +21,8 @@ const READ_SIZE: usize = 8096;
 const MIN_KERNEL_MAJOR_VERSION: u16 = 5;
 const MIN_KERNEL_MINOR_VERSION: u16 = 5;
 
-fn main() -> anyhow::Result<()> {
+#[tokio::main(basic_scheduler)]
+async fn main() -> anyhow::Result<()> {
     let (major, minor) = get_kernel_version().context("failed to check the kernel version")?;
     anyhow::ensure!(
         major >= MIN_KERNEL_MAJOR_VERSION && minor >= MIN_KERNEL_MINOR_VERSION,
@@ -39,46 +45,61 @@ fn main() -> anyhow::Result<()> {
     let mut ring = IoUring::new(QUEUE_DEPTH) //
         .context("failed to init io_uring")?;
 
+    let eventfd = EventFd::new(0).context("eventfd")?;
+    ring.registrar()
+        .register_eventfd(eventfd.as_raw_fd())
+        .context("register eventfd to io_uring")?;
+
+    let mut eventfd = PollEvented::new(eventfd).context("PollEvented<EventFd>")?;
+
     add_accept_request(&mut ring, &listener)?;
     ring.submit_sqes()?;
 
     loop {
-        let (user_data, res) = wait_next_event(&mut ring)?;
-        let n = res.context("async request failed")?;
+        let count = {
+            let mut buf = [0u8; 8];
+            let n = eventfd.read(&mut buf[..]).await?;
+            debug_assert_eq!(n, 8);
+            u64::from_ne_bytes(buf)
+        };
+        log::trace!("receive a completion event(count = {})", count);
 
-        log::trace!("receive a completion event");
-        match *user_data {
-            Event::Accept => {
-                log::trace!("--> accept");
-                add_accept_request(&mut ring, &listener)?;
+        while let Some((user_data, res)) = peek_next_event(&mut ring) {
+            let n = res.context("async request failed")?;
 
-                let client_socket = unsafe { TcpStream::from_raw_fd(n as _) };
-                let buf = vec![0u8; READ_SIZE];
-                add_read_request(&mut ring, client_socket, buf)?;
-            }
+            match *user_data {
+                Event::Accept => {
+                    log::trace!("--> accept");
+                    add_accept_request(&mut ring, &listener)?;
 
-            Event::Read { .. } if n == 0 => eprintln!("warning: empty request"),
-            Event::Read { buf, client_socket } => {
-                log::trace!("--> read {} bytes", n);
-                let buf = &buf[..n];
+                    let client_socket = unsafe { TcpStream::from_raw_fd(n as _) };
+                    let buf = vec![0u8; READ_SIZE];
+                    add_read_request(&mut ring, client_socket, buf)?;
+                }
 
-                let request = crate::http::parse_request(buf)?
-                    .ok_or_else(|| anyhow::anyhow!("unimplemented: continue read request"))?;
-                log::info!("{} {}", request.method, request.path);
+                Event::Read { .. } if n == 0 => (),
+                Event::Read { buf, client_socket } => {
+                    log::trace!("--> read {} bytes", n);
+                    let buf = &buf[..n];
 
-                let (response, body) = handle_request(request).unwrap_or_else(|err| {
-                    make_error_response(
-                        "500 Internal Server Error",
-                        &format!("internal server error: {}", err),
-                    )
-                });
+                    let request = crate::http::parse_request(buf)?
+                        .ok_or_else(|| anyhow::anyhow!("unimplemented: continue read request"))?;
+                    log::info!("{} {}", request.method, request.path);
 
-                add_write_request(&mut ring, client_socket, response, body)?;
-            }
+                    let (response, body) = handle_request(request).unwrap_or_else(|err| {
+                        make_error_response(
+                            "500 Internal Server Error",
+                            &format!("internal server error: {}", err),
+                        )
+                    });
 
-            Event::Write { .. } => {
-                log::trace!("--> write {} bytes", n);
-                /* do nothing. */
+                    add_write_request(&mut ring, client_socket, response, body)?;
+                }
+
+                Event::Write { .. } => {
+                    log::trace!("--> write {} bytes", n);
+                    /* do nothing. */
+                }
             }
         }
 
@@ -99,8 +120,8 @@ enum Event {
     },
 }
 
-fn wait_next_event(ring: &mut IoUring) -> io::Result<(Box<Event>, io::Result<usize>)> {
-    let cqe = ring.wait_for_cqe()?;
+fn peek_next_event(ring: &mut IoUring) -> Option<(Box<Event>, io::Result<usize>)> {
+    let cqe = ring.peek_for_cqe()?;
 
     let user_data = unsafe {
         let ptr = cqe.user_data() as *mut Event;
@@ -109,7 +130,7 @@ fn wait_next_event(ring: &mut IoUring) -> io::Result<(Box<Event>, io::Result<usi
 
     let res = cqe.result();
 
-    Ok((user_data, res))
+    Some((user_data, res))
 }
 
 fn next_sqe(ring: &mut IoUring) -> anyhow::Result<iou::SubmissionQueueEvent<'_>> {
