@@ -23,7 +23,7 @@ const MIN_KERNEL_MINOR_VERSION: u16 = 5;
 
 #[tokio::main(basic_scheduler)]
 async fn main() -> anyhow::Result<()> {
-    let (major, minor) = get_kernel_version().context("failed to check the kernel version")?;
+    let (major, minor) = get_kernel_version().context("failed to get the kernel version")?;
     anyhow::ensure!(
         major >= MIN_KERNEL_MAJOR_VERSION && minor >= MIN_KERNEL_MINOR_VERSION,
         "The kernel version must be at least {}.{} (your version is {}.{})",
@@ -33,7 +33,8 @@ async fn main() -> anyhow::Result<()> {
         minor,
     );
 
-    pretty_env_logger::try_init()?;
+    pretty_env_logger::try_init() //
+        .context("failed to initialize the logger")?;
 
     let listener = TcpListener::bind("127.0.0.1:8000") //
         .context("failed to open listener socket")?;
@@ -48,12 +49,13 @@ async fn main() -> anyhow::Result<()> {
     let eventfd = EventFd::new(0).context("eventfd")?;
     ring.registrar()
         .register_eventfd(eventfd.as_raw_fd())
-        .context("register eventfd to io_uring")?;
+        .context("failed to register eventfd to io_uring")?;
 
-    let mut eventfd = PollEvented::new(eventfd).context("PollEvented<EventFd>")?;
+    let mut eventfd = PollEvented::new(eventfd) //
+        .context("failed to asyncify EventFd")?;
 
     add_accept_request(&mut ring, &listener)?;
-    ring.submit_sqes()?;
+    ring.sq().submit().context("failed to submit SQEs")?;
 
     loop {
         let count = {
@@ -62,12 +64,12 @@ async fn main() -> anyhow::Result<()> {
             debug_assert_eq!(n, 8);
             u64::from_ne_bytes(buf)
         };
-        log::trace!("receive a completion event(count = {})", count);
+        log::trace!("receive completion events (count = {})", count);
 
-        while let Some((user_data, res)) = peek_next_event(&mut ring) {
+        while let Some((event, res)) = peek_next_event(&mut ring) {
             let n = res.context("async request failed")?;
 
-            match *user_data {
+            match *event {
                 Event::Accept => {
                     log::trace!("--> accept");
                     add_accept_request(&mut ring, &listener)?;
@@ -84,14 +86,16 @@ async fn main() -> anyhow::Result<()> {
 
                     let request = crate::http::parse_request(buf)?
                         .ok_or_else(|| anyhow::anyhow!("unimplemented: continue read request"))?;
+
                     log::info!("{} {}", request.method, request.path);
 
-                    let (response, body) = handle_request(request).unwrap_or_else(|err| {
-                        make_error_response(
-                            "500 Internal Server Error",
-                            &format!("internal server error: {}", err),
-                        )
-                    });
+                    let (response, body) = handle_request(request) //
+                        .unwrap_or_else(|err| {
+                            make_error_response(
+                                "500 Internal Server Error",
+                                &format!("internal server error: {}", err),
+                            )
+                        });
 
                     add_write_request(&mut ring, client_socket, response, body)?;
                 }
@@ -103,7 +107,7 @@ async fn main() -> anyhow::Result<()> {
             }
         }
 
-        ring.submit_sqes()?;
+        ring.sq().submit().context("failed to submit SQEs")?;
     }
 }
 
@@ -134,7 +138,7 @@ fn peek_next_event(ring: &mut IoUring) -> Option<(Box<Event>, io::Result<usize>)
 }
 
 fn next_sqe(ring: &mut IoUring) -> anyhow::Result<iou::SubmissionQueueEvent<'_>> {
-    ring.next_sqe().context("submission queue is empty")
+    ring.next_sqe().context("submission queue is full")
 }
 
 fn add_accept_request(ring: &mut IoUring, listener: &TcpListener) -> anyhow::Result<()> {
@@ -260,7 +264,7 @@ fn make_error_response(status: &'static str, msg: &str) -> (Response, Vec<u8>) {
             </head>\
             <body>\
             <h1>{status}</h1>\
-            <p>{msg}</p>
+            <p>{msg}</p>\
             </body>\
             </html>\
         ",
